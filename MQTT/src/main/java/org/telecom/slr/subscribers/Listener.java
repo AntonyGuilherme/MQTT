@@ -44,7 +44,7 @@ public class Listener {
             ////subscribe to the topic
             mqttClient.subscribe(topic, qos);
             mqttClient.setCallback(new MessagesHandler());
-            
+
             while(!Objects.equals(buffer.readLine(), "finish"));
 
             mqttClient.disconnect();
