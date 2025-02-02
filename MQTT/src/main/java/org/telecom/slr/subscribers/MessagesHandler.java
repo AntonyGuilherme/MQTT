@@ -1,10 +1,11 @@
-package org.telecom.slr;
+package org.telecom.slr.subscribers;
 
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
 import org.eclipse.paho.client.mqttv3.MqttCallback;
 import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
 
+import java.util.Date;
 import java.util.logging.Logger;
 
 public class MessagesHandler implements MqttCallback {
@@ -17,7 +18,7 @@ public class MessagesHandler implements MqttCallback {
 
     @Override
     public void messageArrived(String topic, MqttMessage mqttMessage) throws Exception {
-        System.out.println(String.format("Message arrived %s %s", topic, new String(mqttMessage.getPayload())));
+        System.out.printf("[%s]: %s / %s%n", topic, new String(mqttMessage.getPayload()), new Date());
     }
 
     @Override

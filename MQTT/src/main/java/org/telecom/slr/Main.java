@@ -5,18 +5,19 @@ import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
 import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 
 public class Main {
     public static void main(String[] args) {
         String topic        = "labs/paho";
         String messageContent = "Message from my Lab's Paho Mqtt Client";
-        int qos             = 0;
+        int qos             = 1;
         String brokerURI       = "tcp://localhost:1883";
         String clientId     = "myClientID_Pub";
-        //MemoryPersistence persistence = new MemoryPersistence();
+
 
         ////instantiate a synchronous MQTT Client to connect to the targeted Mqtt Broker
-        try(MqttClient mqttClient = new MqttClient(brokerURI, clientId)) {
+        try(MqttClient mqttClient = new MqttClient(brokerURI, clientId, new MemoryPersistence())) {
             ////specify the Mqtt Client's connection options
             MqttConnectOptions connectOptions = new MqttConnectOptions();
             //clean session
