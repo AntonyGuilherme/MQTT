@@ -11,7 +11,7 @@ public class Main {
     public static void main(String[] args) {
         String topic        = "labs/paho";
         String messageContent = "Message from my Lab's Paho Mqtt Client";
-        int qos             = 2;
+        int qos             = 0;
         String brokerURI       = "tcp://localhost:1883";
         String clientId     = "myClientID_Pub";
 
@@ -34,6 +34,7 @@ public class Main {
             System.out.println("Mqtt Client: Publishing message: " + messageContent);
             MqttMessage message = new MqttMessage(messageContent.getBytes());//instantiate the message including its content (payload)
             message.setQos(qos);//set the message's QoS
+            message.setRetained(true);
             mqttClient.publish(topic, message);//publish the message to a given topic
             System.out.println("Mqtt Client: successfully published the message.");
 
