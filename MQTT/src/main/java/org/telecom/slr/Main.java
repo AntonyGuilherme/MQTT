@@ -21,7 +21,7 @@ public class Main {
             ////specify the Mqtt Client's connection options
             MqttConnectOptions connectOptions = new MqttConnectOptions();
             //clean session
-            connectOptions.setCleanSession(true);
+            connectOptions.setCleanSession(false);
             //customise other connection options here...
             //...
 
