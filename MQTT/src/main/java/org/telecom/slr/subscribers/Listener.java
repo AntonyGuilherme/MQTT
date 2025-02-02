@@ -30,14 +30,20 @@ public class Listener {
             System.out.print("Inform Qos:");
             int qos = Integer.parseInt(buffer.readLine());
 
+            ////subscribe to the topic
+            mqttClient.subscribe(topic, qos);
+            mqttClient.setCallback(new MessagesHandler());
+
             mqttClient.disconnect();
+
+            System.out.print("Ready: ");
+            while(!Objects.equals(buffer.readLine(), "ready"));
+
             mqttClient.connect(connectOptions);
 
             ////subscribe to the topic
             mqttClient.subscribe(topic, qos);
             mqttClient.setCallback(new MessagesHandler());
-
-
 
             // Reading data using readLine
             while(!Objects.equals(buffer.readLine(), "finish"));
