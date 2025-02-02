@@ -11,7 +11,7 @@ public class Main {
     public static void main(String[] args) {
         String topic        = "labs/paho";
         String messageContent = "Message from my Lab's Paho Mqtt Client";
-        int qos             = 0;
+        int qos             = 1;
         String brokerURI       = "tcp://localhost:1883";
         String clientId     = "myClientID_Pub";
 
