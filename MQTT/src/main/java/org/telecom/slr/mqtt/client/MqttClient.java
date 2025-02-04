@@ -27,9 +27,47 @@ public class MqttClient implements AutoCloseable {
     public static void main(String[] args) {
         try (MqttClient client = connect(BROKER_HOST, BROKER_PORT)) {
             client.sendCONNECT();
-            client.sendDISCONNECT();
-        }catch (Exception e) {
+            client.publish("topic", "MQTT is awesome");
+        } catch (Exception e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    private void publish(String topic, String message) throws IOException, InterruptedException {
+        byte[] topicBytes = topic.getBytes();
+        byte[] messageBytes = message.getBytes();
+
+        byte topicLengthMSB = (byte) (topicBytes.length >> 8);
+        byte topicLengthLSB = (byte) (topicBytes.length);
+
+        int length = 2 + topicBytes.length + 2 + messageBytes.length;
+        byte[] packet = new byte[length + 2];
+
+        packet[0] = (byte) 0x32;
+        packet[1] = (byte) length;
+        packet[2] = topicLengthMSB;
+        packet[3] = topicLengthLSB;
+        System.arraycopy(topicBytes, 0, packet, 4, topicBytes.length);
+        int packetId = 25; // Fixed Packet Identifier for QoS 1
+        byte packetIdMSB = (byte) (packetId >> 8);
+        byte packetIdLSB = (byte) (packetId);
+
+        int index = 4 + topicBytes.length;
+        packet[index++] = packetIdMSB;
+        packet[index++] = packetIdLSB;
+
+        System.arraycopy(messageBytes, 0, packet, index, messageBytes.length);
+
+        out.write(packet);
+        out.flush();
+
+        byte[] puback = new byte[4];
+        int bytesRead = in.read(puback);
+        if (bytesRead == 4 && puback[0] == (byte) 0x40 && puback[1] == 0x02) {
+            int packetIdReceived = ((puback[2] & 0xFF) << 8) | (puback[3] & 0xFF);
+            System.out.println("PUBACK received! Packet ID: " + packetIdReceived);
+        } else {
+            throw new RuntimeException("PUBACK not received or incorrect response: " + Arrays.toString(puback));
         }
     }
 
@@ -72,7 +110,7 @@ public class MqttClient implements AutoCloseable {
     }
 
     private void sendDISCONNECT() throws IOException {
-        byte[] disconnectPacket = { (byte) 0xE0, 0x00 };
+        byte[] disconnectPacket = {(byte) 0xE0, 0x00};
         out.write(disconnectPacket);
         out.flush();
         System.out.println("DISCONNECT");
