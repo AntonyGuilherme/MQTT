@@ -28,6 +28,8 @@ public class MqttClient implements AutoCloseable {
         try (MqttClient client = connect(BROKER_HOST, BROKER_PORT)) {
             client.sendCONNECT();
             client.publish("topic", "MQTT is awesome");
+            client.subscribe("topic");
+            client.listen();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -48,7 +50,7 @@ public class MqttClient implements AutoCloseable {
         packet[2] = topicLengthMSB;
         packet[3] = topicLengthLSB;
         System.arraycopy(topicBytes, 0, packet, 4, topicBytes.length);
-        int packetId = 25; // Fixed Packet Identifier for QoS 1
+        int packetId = (int) (Math.random() * 1000); // Fixed Packet Identifier for QoS 1
         byte packetIdMSB = (byte) (packetId >> 8);
         byte packetIdLSB = (byte) (packetId);
 
@@ -122,6 +124,39 @@ public class MqttClient implements AutoCloseable {
         return client;
     }
 
+    public void subscribe(String topic) throws IOException {
+        byte[] topicBytes = topic.getBytes();
+        byte topicLengthMSB = (byte) (topicBytes.length >> 8);
+        byte topicLengthLSB = (byte) (topicBytes.length);
+
+        int packetId = (int) (Math.random() * 10);
+        byte packetIdMSB = (byte) (packetId >> 8);
+        byte packetIdLSB = (byte) (packetId);
+
+        byte[] packet = new byte[7 + topicBytes.length];
+
+        packet[0] = (byte) 0x82;
+        packet[1] = (byte) (packet.length - 2);
+        packet[2] = packetIdMSB;
+        packet[3] = packetIdLSB;
+        packet[4] = topicLengthMSB;
+        packet[5] = topicLengthLSB;
+        System.arraycopy(topicBytes, 0, packet, 6, topicBytes.length);
+        packet[6 + topicBytes.length] = (byte) 0x01;
+
+        out.write(packet);
+        out.flush();
+
+        byte[] suback = new byte[4];
+        int bytesRead = in.read(suback);
+        if (bytesRead == 4 && suback[0] == (byte) 0x90) {
+            int packetIdReceived = ((suback[2] & 0xFF) << 8) | (suback[3] & 0xFF);
+            System.out.printf("Subscription (SUBACK) confirmed with Packet ID: %d%n", packetIdReceived);
+        } else {
+            throw new RuntimeException("No SUBACK received: " + Arrays.toString(suback));
+        }
+    }
+
     @Override
     public void close() throws Exception {
         this.sendDISCONNECT();
@@ -132,5 +167,44 @@ public class MqttClient implements AutoCloseable {
         this.socket = new Socket(host, port);
         this.out = socket.getOutputStream();
         this.in = socket.getInputStream();
+    }
+
+    private void listen() throws IOException, InterruptedException {
+        int reads = 1;
+        while (reads++ < 600) {
+            Thread.sleep(100);
+            if (in.available() > 0) {
+                byte[] header = new byte[2]; // 2 bytes (Fixed Header + Remaining Length)
+                in.read(header);
+
+                if ((header[0] & 0xF0) == (byte) 0x30) {
+                    int remainingLength = header[1] & 0xFF;
+                    byte[] payload = new byte[remainingLength];
+                    in.read(payload);
+
+                    int topicLength = ((payload[0] & 0xFF) << 8) | (payload[1] & 0xFF);
+                    String topic = new String(payload, 2, topicLength);
+
+                    int index = 2 + topicLength;
+                    int packetId = ((payload[index] & 0xFF) << 8) | (payload[index + 1] & 0xFF);
+                    String message = new String(payload, index + 2, remainingLength - (index + 2));
+
+                    System.out.printf("Message %s on Topic: %s ", message, topic);
+
+                    byte[] puback = new byte[4];
+                    puback[0] = (byte) 0x40;
+                    puback[1] = 0x02;
+                    puback[2] = (byte) (packetId >> 8);
+                    puback[3] = (byte) (packetId);
+
+                    out.write(puback);
+                    out.flush();
+
+                    System.out.printf("Sending PUBACK to confirm %d%n", packetId);
+                } else {
+                    System.out.printf("Unknown packet type: %s%n", Arrays.toString(header));
+                }
+            }
+        }
     }
 }
