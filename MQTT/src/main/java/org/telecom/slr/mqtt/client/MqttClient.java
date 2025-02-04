@@ -11,7 +11,7 @@ import java.util.Arrays;
 public class MqttClient implements AutoCloseable {
     private static final String BROKER_HOST = "localhost"; // Replace with your broker
     private static final int BROKER_PORT = 1883;
-    private static final String BROKER_CLIENT = "admin";
+    private static final String BROKER_CLIENT = "client";
 
     private final String host;
     private final int port;
@@ -40,7 +40,7 @@ public class MqttClient implements AutoCloseable {
         byte keepAliveMSB = 0x00;
         byte keepAliveLSB = 0x3C;   // 60 seconds
 
-        byte[] clientIdBytes = "".getBytes();
+        byte[] clientIdBytes = BROKER_CLIENT.getBytes();
         byte clientIdLengthMSB = (byte) (clientIdBytes.length >> 8);
         byte clientIdLengthLSB = (byte) (clientIdBytes.length);
 
@@ -86,6 +86,7 @@ public class MqttClient implements AutoCloseable {
 
     @Override
     public void close() throws Exception {
+        this.sendDISCONNECT();
         this.socket.close();
     }
 
