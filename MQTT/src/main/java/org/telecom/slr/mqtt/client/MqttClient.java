@@ -1,17 +1,17 @@
 package org.telecom.slr.mqtt.client;
 
-import org.eclipse.paho.client.mqttv3.MqttException;
-
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
 import java.net.Socket;
-import java.util.Arrays;
+import java.util.Date;
+import java.util.Hashtable;
+import java.util.Map;
+import java.util.Objects;
 
 public class MqttClient implements AutoCloseable {
     private static final String BROKER_HOST = "localhost"; // Replace with your broker
     private static final int BROKER_PORT = 1883;
     private static final String BROKER_CLIENT = "client";
+    private final Map<Integer, String> confirmations = new Hashtable<>();
 
     private final String host;
     private final int port;
@@ -24,53 +24,98 @@ public class MqttClient implements AutoCloseable {
         this.port = port;
     }
 
+    public synchronized void set(Integer id, String content) {
+        this.confirmations.put(id, content);
+    }
+
+    public synchronized String get(Integer id) {
+        if (this.confirmations.containsKey(id)) {
+            return this.confirmations.get(id);
+        }
+
+        return null;
+    }
+
     public static void main(String[] args) {
         try (MqttClient client = connect(BROKER_HOST, BROKER_PORT)) {
-            client.sendCONNECT();
-            client.publish("topic", "MQTT is awesome");
-            client.subscribe("topic");
-            client.listen();
+            new Thread(client::listen).start();
+            new Thread(() -> {
+                try {
+                    client.sendCONNECT();
+                } catch (Exception e) {
+                    System.out.printf("Error at the start connect %s\n", e.getMessage());
+                }
+            }).start();
+
+            client.readConsole();
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
     }
 
-    private void publish(String topic, String message) throws IOException, InterruptedException {
+    public void readConsole() {
+        try(BufferedReader buffer = new BufferedReader(new InputStreamReader(System.in))) {
+            String command = null;
+
+            while (!Objects.equals(command, "finish")) {
+                if (Objects.equals(command, "subscribe")) {
+                    System.out.print("Qos: ");
+                    int qos = Integer.parseInt(buffer.readLine());
+                    subscribe("labs/paho", qos);
+                } else if (Objects.equals(command, "publish")) {
+                    System.out.print("Message: ");
+                    String message = buffer.readLine();
+                    System.out.print("Qos: ");
+                    int qos = Integer.parseInt(buffer.readLine());
+                    publish("labs/paho", message, qos);
+                }
+                System.out.print("Command: ");
+                command = buffer.readLine();
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private void publish(String topic, String message, int qos) throws IOException {
         byte[] topicBytes = topic.getBytes();
         byte[] messageBytes = message.getBytes();
 
         byte topicLengthMSB = (byte) (topicBytes.length >> 8);
         byte topicLengthLSB = (byte) (topicBytes.length);
 
-        int length = 2 + topicBytes.length + 2 + messageBytes.length;
+        int length = 2 + topicBytes.length + messageBytes.length;
+        int packetId = 0;
+
+        // **QoS 1 and 2 need a Packet Identifier**
+        if (qos > 0) {
+            packetId = IdentityGenerator.generate();
+            length += 2; // Add 2 bytes for Packet Identifier
+        }
+
         byte[] packet = new byte[length + 2];
 
-        packet[0] = (byte) 0x32;
+        packet[0] = (byte) (0x30 | (qos << 1)); // QoS 0 → `0x30`, QoS 1 → `0x32`, QoS 2 → `0x34`
         packet[1] = (byte) length;
+
         packet[2] = topicLengthMSB;
         packet[3] = topicLengthLSB;
         System.arraycopy(topicBytes, 0, packet, 4, topicBytes.length);
-        int packetId = (int) (Math.random() * 1000); // Fixed Packet Identifier for QoS 1
-        byte packetIdMSB = (byte) (packetId >> 8);
-        byte packetIdLSB = (byte) (packetId);
 
         int index = 4 + topicBytes.length;
-        packet[index++] = packetIdMSB;
-        packet[index++] = packetIdLSB;
+        if (qos > 0) {
+            byte packetIdMSB = (byte) (packetId >> 8);
+            byte packetIdLSB = (byte) (packetId);
+            packet[index++] = packetIdMSB;
+            packet[index++] = packetIdLSB;
+        }
 
         System.arraycopy(messageBytes, 0, packet, index, messageBytes.length);
 
+        print("%n[PUBLISH] [%d, %s] with Qos=%d at %s",packetId, message, qos, new Date());
+
         out.write(packet);
         out.flush();
-
-        byte[] puback = new byte[4];
-        int bytesRead = in.read(puback);
-        if (bytesRead == 4 && puback[0] == (byte) 0x40 && puback[1] == 0x02) {
-            int packetIdReceived = ((puback[2] & 0xFF) << 8) | (puback[3] & 0xFF);
-            System.out.println("PUBACK received! Packet ID: " + packetIdReceived);
-        } else {
-            throw new RuntimeException("PUBACK not received or incorrect response: " + Arrays.toString(puback));
-        }
     }
 
     private void sendCONNECT() throws IOException {
@@ -101,14 +146,7 @@ public class MqttClient implements AutoCloseable {
         this.out.write(packet);
         this.out.flush();
 
-        byte[] connack = new byte[4];
-        int readBytes = in.read(connack);
-
-        if (readBytes == 4 && connack[0] == (byte) 0x20 && connack[1] == 0x02 && connack[3] == 0x00) {
-            System.out.printf("CONNACK received %s%n", connack);
-        } else {
-            throw new IOException("CONNACK failed: " + Arrays.toString(connack));
-        }
+        while (!"CONNACK".equals(get(-1))) {}
     }
 
     private void sendDISCONNECT() throws IOException {
@@ -124,36 +162,134 @@ public class MqttClient implements AutoCloseable {
         return client;
     }
 
-    public void subscribe(String topic) throws IOException {
+    public void subscribe(String topic, int qos) throws IOException {
         byte[] topicBytes = topic.getBytes();
+
         byte topicLengthMSB = (byte) (topicBytes.length >> 8);
         byte topicLengthLSB = (byte) (topicBytes.length);
 
-        int packetId = (int) (Math.random() * 10);
+        int packetId = IdentityGenerator.generate();
         byte packetIdMSB = (byte) (packetId >> 8);
         byte packetIdLSB = (byte) (packetId);
 
         byte[] packet = new byte[7 + topicBytes.length];
 
+        // fixed header
         packet[0] = (byte) 0x82;
         packet[1] = (byte) (packet.length - 2);
+
+        // variable header
         packet[2] = packetIdMSB;
         packet[3] = packetIdLSB;
+
+        // payload topic and qos
         packet[4] = topicLengthMSB;
         packet[5] = topicLengthLSB;
         System.arraycopy(topicBytes, 0, packet, 6, topicBytes.length);
-        packet[6 + topicBytes.length] = (byte) 0x01;
+
+        packet[6 + topicBytes.length] = (byte) qos;
 
         out.write(packet);
         out.flush();
 
-        byte[] suback = new byte[4];
-        int bytesRead = in.read(suback);
-        if (bytesRead == 4 && suback[0] == (byte) 0x90) {
-            int packetIdReceived = ((suback[2] & 0xFF) << 8) | (suback[3] & 0xFF);
-            System.out.printf("Subscription (SUBACK) confirmed with Packet ID: %d%n", packetIdReceived);
-        } else {
-            throw new RuntimeException("No SUBACK received: " + Arrays.toString(suback));
+        while (!"SUBACK".equals(get(packetId))) {}
+
+        print("%n[SUBSCRIBE] topic %s with QoS %d at %s", topic, qos, new Date());
+    }
+
+    private void connect() throws IOException {
+        this.socket = new Socket(host, port);
+        this.out = socket.getOutputStream();
+        this.in = socket.getInputStream();
+    }
+
+    private void listen() {
+        try {
+            while (true) {
+                if (in.available() > 0) {
+                    byte[] header = new byte[2]; // 2 bytes (Fixed Header + Remaining Length)
+                    in.read(header);
+
+                    if ((header[0] & 0xF0) == (byte) 0x30) {
+                        int qos = (header[0] >> 1) & 0x03;
+
+                        int remainingLength = header[1] & 0xFF;
+                        byte[] payload = new byte[remainingLength];
+                        in.read(payload);
+
+                        int topicLength = ((payload[0] & 0xFF) << 8) | (payload[1] & 0xFF);
+                        String topic = new String(payload, 2, topicLength);
+
+                        int index = 2 + topicLength;
+                        int packetId = 0;
+                        if (qos > 0) {
+                            packetId = ((payload[index] & 0xFF) << 8) | (payload[index + 1] & 0xFF);
+                            index += 2;
+                        }
+
+                        String message = new String(payload, index, remainingLength - (index));
+
+                        print("%n[MESSAGE] %d %s | %s at %s", packetId, topic, message, new Date());
+
+                        if (qos == 1) {
+                            byte[] puback = new byte[4];
+                            puback[0] = (byte) 0x40;
+                            puback[1] = 0x02;
+                            puback[2] = (byte) (packetId >> 8);
+                            puback[3] = (byte) (packetId);
+
+                            out.write(puback);
+                            out.flush();
+                            print("%n[PUBACK] Confirming %d at %s", packetId, new Date());
+                        }
+                        else if (qos == 2) {
+                            // Acknowledge Receipt of PUBLISH
+                            byte[] pubrec = { (byte) 0x50, 0x02, (byte) (packetId >> 8), (byte) packetId };
+                            out.write(pubrec);
+                            out.flush();
+                            print("%n[PUBREC] Sending Acknowledgement Receipt of %d at %s", packetId, new Date());
+
+                            // Wait for PUBREL
+                            byte[] pubrel = new byte[4];
+                            in.read(pubrel);
+
+                            if (pubrel[0] == (byte) 0x62 && pubrel[1] == 0x02) {
+                                print("%n[PUBREL] Acknowledge Received of %d at %s", packetId, new Date());
+
+                                // Send PUBCOMP
+                                byte[] pubcomp = { (byte) 0x70, 0x02, (byte) (packetId >> 8), (byte) packetId };
+                                out.write(pubcomp);
+                                out.flush();
+                                print("%n[PUBCOMP] Finish of %d at %s", packetId, new Date());
+                            }
+                        }
+
+                    } else {
+                        byte[] suback = new byte[2];
+                        in.read(suback);
+
+                        if (header[0] == (byte) 0x90) {
+                            int packetIdReceived = ((suback[0] & 0xFF) << 8) | (suback[1] & 0xFF);
+                            set(packetIdReceived, "SUBACK");
+                            print("%n[SUBACK] Subscription confirmed of %d at %s", packetIdReceived, new Date());
+                            in.read(new byte[2]);
+                        }
+
+                        if (header[0] == (byte) 0x20 && header[1] == 0x02 && suback[1] == 0x00) {
+                            set(-1, "CONNACK");
+                            print("%n[CONNACK] Received confirmed at %s", new Date());
+                        }
+
+                        if (header[0] == (byte) 0x40 && header[1] == 0x02) {
+                            int packetIdReceived = ((suback[0] & 0xFF) << 8) | (suback[1] & 0xFF);
+                            set(packetIdReceived, "PUBACK");
+                            print("%n[PUBACK] Confirmation Received! Packet ID: %d at %s", packetIdReceived, new Date());
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -163,48 +299,15 @@ public class MqttClient implements AutoCloseable {
         this.socket.close();
     }
 
-    private void connect() throws IOException {
-        this.socket = new Socket(host, port);
-        this.out = socket.getOutputStream();
-        this.in = socket.getInputStream();
+    public synchronized void print(String content, Object... args) {
+        System.out.printf(content, args);
     }
 
-    private void listen() throws IOException, InterruptedException {
-        int reads = 1;
-        while (reads++ < 600) {
-            Thread.sleep(100);
-            if (in.available() > 0) {
-                byte[] header = new byte[2]; // 2 bytes (Fixed Header + Remaining Length)
-                in.read(header);
+    class IdentityGenerator {
+        private static int current = 1;
 
-                if ((header[0] & 0xF0) == (byte) 0x30) {
-                    int remainingLength = header[1] & 0xFF;
-                    byte[] payload = new byte[remainingLength];
-                    in.read(payload);
-
-                    int topicLength = ((payload[0] & 0xFF) << 8) | (payload[1] & 0xFF);
-                    String topic = new String(payload, 2, topicLength);
-
-                    int index = 2 + topicLength;
-                    int packetId = ((payload[index] & 0xFF) << 8) | (payload[index + 1] & 0xFF);
-                    String message = new String(payload, index + 2, remainingLength - (index + 2));
-
-                    System.out.printf("Message %s on Topic: %s ", message, topic);
-
-                    byte[] puback = new byte[4];
-                    puback[0] = (byte) 0x40;
-                    puback[1] = 0x02;
-                    puback[2] = (byte) (packetId >> 8);
-                    puback[3] = (byte) (packetId);
-
-                    out.write(puback);
-                    out.flush();
-
-                    System.out.printf("Sending PUBACK to confirm %d%n", packetId);
-                } else {
-                    System.out.printf("Unknown packet type: %s%n", Arrays.toString(header));
-                }
-            }
+        public static int generate() {
+            return current++;
         }
     }
 }
