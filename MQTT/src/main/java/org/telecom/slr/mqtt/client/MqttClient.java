@@ -3,81 +3,22 @@ package org.telecom.slr.mqtt.client;
 import java.io.*;
 import java.net.Socket;
 import java.util.Date;
-import java.util.Hashtable;
-import java.util.Map;
-import java.util.Objects;
 
 public class MqttClient implements AutoCloseable {
-    private static final String BROKER_HOST = "localhost"; // Replace with your broker
-    private static final int BROKER_PORT = 1883;
-    private static final String BROKER_CLIENT = "client";
-    private final Map<Integer, String> confirmations = new Hashtable<>();
-
     private final String host;
+    private final String clientId;
     private final int port;
     private Socket socket;
     private OutputStream out;
     private InputStream in;
 
-    private MqttClient(String host, int port) {
+    private MqttClient(String host, int port, String clientId) {
         this.host = host;
         this.port = port;
+        this.clientId = clientId;
     }
 
-    public synchronized void set(Integer id, String content) {
-        this.confirmations.put(id, content);
-    }
-
-    public synchronized String get(Integer id) {
-        if (this.confirmations.containsKey(id)) {
-            return this.confirmations.get(id);
-        }
-
-        return null;
-    }
-
-    public static void main(String[] args) {
-        try (MqttClient client = connect(BROKER_HOST, BROKER_PORT)) {
-            new Thread(client::listen).start();
-            new Thread(() -> {
-                try {
-                    client.sendCONNECT();
-                } catch (Exception e) {
-                    System.out.printf("Error at the start connect %s\n", e.getMessage());
-                }
-            }).start();
-
-            client.readConsole();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public void readConsole() {
-        try(BufferedReader buffer = new BufferedReader(new InputStreamReader(System.in))) {
-            String command = null;
-
-            while (!Objects.equals(command, "finish")) {
-                if (Objects.equals(command, "subscribe")) {
-                    System.out.print("Qos: ");
-                    int qos = Integer.parseInt(buffer.readLine());
-                    subscribe("labs/paho", qos);
-                } else if (Objects.equals(command, "publish")) {
-                    System.out.print("Message: ");
-                    String message = buffer.readLine();
-                    System.out.print("Qos: ");
-                    int qos = Integer.parseInt(buffer.readLine());
-                    publish("labs/paho", message, qos);
-                }
-                System.out.print("Command: ");
-                command = buffer.readLine();
-            }
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    private void publish(String topic, String message, int qos) throws IOException {
+    public void publish(String topic, String message, int qos) throws IOException {
         byte[] topicBytes = topic.getBytes();
         byte[] messageBytes = message.getBytes();
 
@@ -125,7 +66,7 @@ public class MqttClient implements AutoCloseable {
         byte keepAliveMSB = 0x00;
         byte keepAliveLSB = 0x3C;   // 60 seconds
 
-        byte[] clientIdBytes = BROKER_CLIENT.getBytes();
+        byte[] clientIdBytes = this.clientId.getBytes();
         byte clientIdLengthMSB = (byte) (clientIdBytes.length >> 8);
         byte clientIdLengthLSB = (byte) (clientIdBytes.length);
 
@@ -146,18 +87,18 @@ public class MqttClient implements AutoCloseable {
         this.out.write(packet);
         this.out.flush();
 
-        while (!"CONNACK".equals(get(-1))) {}
+        System.out.printf("[CONNECT] at %s", new Date());
     }
 
     private void sendDISCONNECT() throws IOException {
         byte[] disconnectPacket = {(byte) 0xE0, 0x00};
         out.write(disconnectPacket);
         out.flush();
-        System.out.println("DISCONNECT");
+        System.out.printf("%n[DISCONNECT] at %s", new Date());
     }
 
-    public static MqttClient connect(String host, int port) throws IOException {
-        MqttClient client = new MqttClient(host, port);
+    public static MqttClient connect(String host, int port, String clientId) throws IOException {
+        MqttClient client = new MqttClient(host, port, clientId);
         client.connect();
         return client;
     }
@@ -192,20 +133,19 @@ public class MqttClient implements AutoCloseable {
         out.write(packet);
         out.flush();
 
-        while (!"SUBACK".equals(get(packetId))) {}
-
         print("%n[SUBSCRIBE] topic %s with QoS %d at %s", topic, qos, new Date());
     }
 
-    private void connect() throws IOException {
+    public void connect() throws IOException {
         this.socket = new Socket(host, port);
         this.out = socket.getOutputStream();
         this.in = socket.getInputStream();
+        sendCONNECT();
     }
 
-    private void listen() {
+    public void listen() {
         try {
-            while (true) {
+            while (!socket.isClosed()) {
                 if (in.available() > 0) {
                     byte[] header = new byte[2]; // 2 bytes (Fixed Header + Remaining Length)
                     in.read(header);
@@ -270,19 +210,16 @@ public class MqttClient implements AutoCloseable {
 
                         if (header[0] == (byte) 0x90) {
                             int packetIdReceived = ((suback[0] & 0xFF) << 8) | (suback[1] & 0xFF);
-                            set(packetIdReceived, "SUBACK");
                             print("%n[SUBACK] Subscription confirmed of %d at %s", packetIdReceived, new Date());
                             in.read(new byte[2]);
                         }
 
                         if (header[0] == (byte) 0x20 && header[1] == 0x02 && suback[1] == 0x00) {
-                            set(-1, "CONNACK");
                             print("%n[CONNACK] Received confirmed at %s", new Date());
                         }
 
                         if (header[0] == (byte) 0x40 && header[1] == 0x02) {
                             int packetIdReceived = ((suback[0] & 0xFF) << 8) | (suback[1] & 0xFF);
-                            set(packetIdReceived, "PUBACK");
                             print("%n[PUBACK] Confirmation Received! Packet ID: %d at %s", packetIdReceived, new Date());
                         }
                     }
@@ -296,14 +233,15 @@ public class MqttClient implements AutoCloseable {
     @Override
     public void close() throws Exception {
         this.sendDISCONNECT();
+        Thread.sleep(100);
         this.socket.close();
     }
 
-    public synchronized void print(String content, Object... args) {
+    private synchronized void print(String content, Object... args) {
         System.out.printf(content, args);
     }
 
-    class IdentityGenerator {
+    static class IdentityGenerator {
         private static int current = 1;
 
         public static int generate() {
